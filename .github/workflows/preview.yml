@@ -1,0 +1,404 @@
+# Actions-only public repository. Source is fetched from private main at runtime.
+# Triggers: Run workflow -> Actions Artifacts only; preview-vX.Y.Z or vX.Y.Z -> public prerelease.
+# The tag version must equal source/package.json on private main.
+# Required secrets: MOKE_SOURCE_DEPLOY_KEY (read-only), MOKE_PREVIEW_ENTITLEMENT_URL,
+# MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY (pinned Ed25519 key, not downloaded on each run).
+# Build caches and source-bearing compiler logs must not be published here.
+# This workflow preserves the private source's Preview gate, capabilities and feature.
+name: Build Moke Preview
+'on':
+  push:
+    tags:
+    - preview-v*
+    - v*
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  resolve:
+    name: Resolve private main and validate configuration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+    - name: Checkout private source
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: hehetoshang/moke
+        ref: main
+        path: source
+        ssh-key: ${{ secrets.MOKE_SOURCE_DEPLOY_KEY }}
+        persist-credentials: false
+        submodules: false
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: '24'
+    - name: Validate source version and Preview trust root
+      id: source
+      shell: bash
+      env:
+        MOKE_PREVIEW_ENTITLEMENT_URL: ${{ secrets.MOKE_PREVIEW_ENTITLEMENT_URL }}
+        MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY: ${{ secrets.MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY }}
+      run: |-
+        set -euo pipefail
+        node <<'JS'
+        const fs = require('node:fs');
+        const cp = require('node:child_process');
+        const pkg = JSON.parse(fs.readFileSync('source/package.json', 'utf8'));
+        const version = pkg.version;
+        if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Invalid source version');
+        if (process.env.GITHUB_REF_TYPE === 'tag') {
+          const tagged = process.env.GITHUB_REF_NAME.replace(/^(?:preview-)?v/, '');
+          if (tagged !== version) throw new Error('Tag version must match package.json on private main');
+        }
+        for (const name of ['MOKE_PREVIEW_ENTITLEMENT_URL', 'MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY']) {
+          if (!process.env[name]?.trim()) throw new Error(`Missing Actions secret: ${name}`);
+        }
+        const u = new URL(process.env.MOKE_PREVIEW_ENTITLEMENT_URL);
+        if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) throw new Error('Invalid entitlement URL');
+        const key = process.env.MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY;
+        if (!/^[A-Za-z0-9_+/-]+={0,2}$/.test(key) || Buffer.from(key, 'base64url').length !== 32) throw new Error('Invalid Ed25519 public key');
+        const sha = cp.execFileSync('git', ['-C', 'source', 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha=${sha}\nversion=${version}\n`);
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${version}\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public prerelease. Mobile packages are unsigned; automatic updating is disabled.\n`);
+        JS
+  build:
+    name: Preview / ${{ matrix.id }}
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    env:
+      CI: 'true'
+      NODE_OPTIONS: --max-old-space-size=4096
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      NEXT_BUILD_WORKERS: '2'
+      NEXT_BUILD_OPTIMIZER_WORKERS: '2'
+      NEXT_PUBLIC_PREVIEW_UPDATER_ENABLED: 'false'
+      BUILD_PLATFORM: ${{ matrix.platform }}
+      BUILD_TARGET: ${{ matrix.target }}
+      BUILD_ID: ${{ matrix.id }}
+      MOKE_PREVIEW_ENTITLEMENT_URL: ${{ secrets.MOKE_PREVIEW_ENTITLEMENT_URL }}
+      MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY: ${{ secrets.MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - id: windows-x64
+          platform: windows
+          os: windows-latest
+          target: x86_64-pc-windows-msvc
+        - id: linux-x64
+          platform: linux
+          os: ubuntu-22.04
+          target: x86_64-unknown-linux-gnu
+        - id: macos-arm64
+          platform: macos
+          os: macos-15
+          target: aarch64-apple-darwin
+        - id: macos-x64
+          platform: macos
+          os: macos-15-intel
+          target: x86_64-apple-darwin
+        - id: android-arm64
+          platform: android
+          os: ubuntu-22.04
+          target: aarch64-linux-android
+        - id: ios-arm64
+          platform: ios
+          os: macos-15
+          target: aarch64-apple-ios
+        - id: ohos-arm64
+          platform: ohos
+          os: ubuntu-22.04
+          target: aarch64-unknown-linux-ohos
+    steps:
+    - name: Checkout private source
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: hehetoshang/moke
+        ref: ${{ needs.resolve.outputs.sha }}
+        path: source
+        ssh-key: ${{ secrets.MOKE_SOURCE_DEPLOY_KEY }}
+        persist-credentials: false
+        submodules: false
+    - name: Checkout pinned public submodules
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        git submodule sync --recursive
+        git submodule update --init --recursive
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+    - name: Setup pnpm
+      uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+      with:
+        version: 9.15.9
+        run_install: false
+    - name: Setup Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: '24'
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      with:
+        targets: ${{ matrix.target }}
+    - name: Install Linux desktop dependencies
+      if: matrix.platform == 'linux'
+      run: |-
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+    - name: Setup Java
+      if: matrix.platform == 'android'
+      uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Install Android SDK packages
+      if: matrix.platform == 'android'
+      run: |-
+        set -euo pipefail
+        sdkmanager --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.0.12077973'
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+        echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+    - name: Install XcodeGen
+      if: matrix.platform == 'ios'
+      run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+    - name: Install OHOS host dependencies
+      if: matrix.platform == 'ohos'
+      run: |-
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-dev jq
+    - name: Setup HarmonyOS SDK
+      if: matrix.platform == 'ohos'
+      uses: ErBWs/setup-ohos@4dbb63025116eb6165ceac58a4bf47cbdc5ac721
+      with:
+        version: 6.1.1.280
+        cache: false
+    - name: Restore Node after SDK setup
+      if: matrix.platform == 'ohos'
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: '24'
+    - name: Install private project dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        pnpm install --frozen-lockfile
+        cd readest
+        pnpm install --no-frozen-lockfile
+        pnpm --filter @readest/readest-app setup-vendors
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+    - name: Prepare Preview configuration
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        node <<'JS'
+        const fs = require('node:fs');
+        const platform = process.env.BUILD_PLATFORM;
+        const cfg = JSON.parse(fs.readFileSync('src-tauri/tauri.preview.conf.json', 'utf8'));
+        if (cfg.identifier !== 'org.houheya.moke.preview') throw new Error('Unexpected Preview identity');
+        // Keep the Preview frontend command: the source build.rs validates it together
+        // with the identifier and Cargo feature. Never substitute the stable frontend.
+        cfg.build.beforeBuildCommand = 'pnpm build:preview && pnpm build:reader && pnpm copy:reader';
+        if (platform === 'ohos') cfg.build.beforeBuildCommand += ' && node scripts/prepare-ohos.mjs';
+        cfg.bundle.createUpdaterArtifacts = false;
+        cfg.plugins.updater = {...cfg.plugins.updater, endpoints: []};
+        if (platform === 'linux') cfg.bundle.targets = ['deb', 'appimage'];
+        if (platform === 'windows') cfg.bundle.targets = ['nsis', 'msi'];
+        if (platform === 'macos') cfg.bundle.targets = ['dmg'];
+        if (platform === 'ios') cfg.bundle.iOS = {...cfg.bundle.iOS, minimumSystemVersion: '17.0'};
+        fs.writeFileSync('src-tauri/tauri.preview.ci.conf.json', JSON.stringify(cfg, null, 2));
+        JS
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+    - name: Build Preview desktop bundles
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        pnpm tauri build --target "$BUILD_TARGET" --config src-tauri/tauri.preview.ci.conf.json --features preview
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+      if: contains(fromJSON('["macos","linux","windows"]'), matrix.platform)
+    - name: Build unsigned Preview Android APK
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        pnpm tauri android init --ci --config src-tauri/tauri.preview.ci.conf.json
+        node scripts/prepare-mobile-app-names.mjs android
+        pnpm tauri icon src-tauri/icons/icon.png
+        python3 - <<'PY'
+        from pathlib import Path
+        import re
+        for p in Path('src-tauri/gen/android/app/src/main/java').rglob('MainActivity.kt'):
+            text = Path('src-tauri/android/MainActivity.kt').read_text()
+            package = re.search(r'^package\s+[^\n;]+', p.read_text(), re.M).group()
+            p.write_text(re.sub(r'^package\s+[^\n;]+', package, text, count=1, flags=re.M))
+        p = Path('src-tauri/gen/android/app/build.gradle.kts')
+        s = p.read_text()
+        if 'missingDimensionStrategy' not in s:
+            s, count = re.subn(r'(defaultConfig\s*\{)', r'\1\n        missingDimensionStrategy("store", "foss")', s, count=1)
+            assert count == 1
+            p.write_text(s)
+        PY
+        pnpm tauri android build --ci --target aarch64 --config src-tauri/tauri.preview.ci.conf.json --features preview
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+      if: matrix.platform == 'android'
+    - name: Build unsigned Preview iOS archive
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        pnpm tauri ios init --ci --config src-tauri/tauri.preview.ci.conf.json
+        node scripts/prepare-mobile-app-names.mjs ios
+        pnpm tauri ios build --ci --target aarch64 --no-sign --archive-only --config src-tauri/tauri.preview.ci.conf.json --features preview
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+      if: matrix.platform == 'ios'
+    - name: Build Preview OpenHarmony HAP
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        export OHOS_HOME="$OHOS_NDK_HOME"
+        export CC_aarch64_unknown_linux_ohos="$OHOS_NDK_HOME/native/llvm/bin/clang"
+        export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER="$OHOS_NDK_HOME/native/llvm/bin/clang"
+        cargo install ohrs --git https://github.com/ohos-rs/ohos-rs --branch ohos
+        node scripts/patch-tauri-ohos-identifier.mjs
+        cargo build --manifest-path vendor/tauri/Cargo.toml -p tauri-cli --no-default-features --features rustls --locked
+        export PATH="$PWD/vendor/tauri/target/debug:$PATH"
+        cargo tauri ohos init --ci --config src-tauri/tauri.ohos.conf.json --config src-tauri/tauri.preview.ci.conf.json
+        cargo tauri icon src-tauri/icons/icon.png
+        (cd src-tauri/gen/ohos && ohpm install)
+        node scripts/prepare-ohos.mjs
+        cargo tauri ohos build --target aarch64 --config src-tauri/tauri.ohos.conf.json --config src-tauri/tauri.preview.ci.conf.json --features preview
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+      if: matrix.platform == 'ohos'
+    - name: Collect only distributable packages
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
+        python3 - <<'PY'
+        from pathlib import Path
+        import os, shutil, hashlib, subprocess
+        platform = os.environ['BUILD_PLATFORM']
+        root = Path.cwd()
+        out = root.parent / 'dist'
+        out.mkdir(exist_ok=True)
+        suffix = os.environ['BUILD_ID']
+        if platform in ('linux', 'windows', 'macos'):
+            base = root / 'src-tauri/target' / os.environ['BUILD_TARGET'] / 'release/bundle'
+            extensions = {'linux': {'.deb', '.AppImage'}, 'windows': {'.msi', '.exe'}, 'macos': {'.dmg'}}[platform]
+            files = [p for p in base.rglob('*') if p.is_file() and p.suffix in extensions]
+        elif platform == 'android':
+            files = list((root / 'src-tauri/gen/android/app/build/outputs/apk').rglob('*release-unsigned.apk'))
+        elif platform == 'ohos':
+            files = list((root / 'src-tauri/gen/ohos/entry/build/default/outputs').rglob('*unsigned.hap'))
+        else:
+            apps = list((root / 'src-tauri/gen/apple/build').glob('**/*.xcarchive/Products/Applications/*.app'))
+            if len(apps) != 1: raise RuntimeError('Expected exactly one iOS application archive')
+            payload_root = Path(os.environ['RUNNER_TEMP']) / 'moke-ipa'
+            payload = payload_root / 'Payload'
+            payload.mkdir(parents=True)
+            shutil.copytree(apps[0], payload / apps[0].name, symlinks=True)
+            ipa = out / f'Moke-Preview-{suffix}-unsigned.ipa'
+            subprocess.run(['ditto', '-c', '-k', '--keepParent', str(payload), str(ipa)], check=True)
+            files = []
+        for p in files:
+            target = out / f'{suffix}-{p.name}'
+            if target.exists(): raise RuntimeError('Ambiguous package filename')
+            shutil.copy2(p, target)
+        packages = sorted(out.iterdir())
+        if not packages: raise RuntimeError('No distributable packages found')
+        (out / f'SHA256SUMS-{suffix}.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in packages))
+        PY
+        PRIVATE_BUILD
+        then
+          echo "::error::Private build step failed. Compiler output was withheld to keep private source out of public logs. Reproduce this step in the private source repository for detailed diagnostics."
+          exit 1
+        fi
+    - name: Upload Preview packages
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: preview-${{ matrix.id }}
+        path: dist/*
+        if-no-files-found: error
+        retention-days: 7
+    - name: Remove private build diagnostics
+      if: always()
+      run: rm -f "$RUNNER_TEMP/moke-private-build.log"
+  publish:
+    name: Publish tagged Preview packages
+    needs:
+    - resolve
+    - build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+    - name: Download completed platform packages
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        pattern: preview-*
+        merge-multiple: true
+        path: dist
+    - name: Publish public prerelease
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        RELEASE_TAG: ${{ github.ref_name }}
+        PREVIEW_VERSION: ${{ needs.resolve.outputs.version }}
+      run: |-
+        set -euo pipefail
+        cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+        Preview packages built from private main. All platform jobs use the same source revision.
+
+        Android, iOS and OpenHarmony packages are unsigned and require signing before installation. Desktop bundles are not notarized. Automatic in-app updating is disabled; download updates from Releases. Preview entitlement verification remains enabled.
+        NOTES
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo '::error::This release already exists. Use a new version tag; published packages will not be overwritten.'
+          exit 1
+        fi
+        gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "Moke Preview v$PREVIEW_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" dist/*
