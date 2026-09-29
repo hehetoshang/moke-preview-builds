@@ -171,7 +171,13 @@ jobs:
       if: matrix.platform == 'android'
       run: |-
         set -euo pipefail
+        : "${ANDROID_HOME:=/usr/local/lib/android/sdk}"
+        export ANDROID_HOME
+        export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
         sdkmanager --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.0.12077973'
+        echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+        echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+        echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
         echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
     - name: Install XcodeGen
@@ -222,7 +228,13 @@ jobs:
         cfg.build.beforeBuildCommand = 'pnpm build:preview && pnpm build:reader && pnpm copy:reader';
         if (platform === 'ohos') cfg.build.beforeBuildCommand += ' && node scripts/prepare-ohos.mjs';
         cfg.bundle.createUpdaterArtifacts = false;
-        cfg.plugins.updater = {...cfg.plugins.updater, endpoints: []};
+        // Empty endpoints disable update checks. Override the base public key too,
+        // so these packages neither inherit Stable's updater identity nor need
+        // a Preview updater key. Package signing is independent of updater signing.
+        cfg.plugins.updater = {...cfg.plugins.updater, endpoints: [], pubkey: ''};
+        if (process.env.NEXT_PUBLIC_PREVIEW_UPDATER_ENABLED !== 'false') {
+          throw new Error('Automatic updates must remain disabled for this workflow');
+        }
         if (platform === 'linux') cfg.bundle.targets = ['deb', 'appimage'];
         if (platform === 'windows') cfg.bundle.targets = ['nsis', 'msi'];
         if (platform === 'macos') cfg.bundle.targets = ['dmg'];
