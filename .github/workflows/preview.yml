@@ -206,7 +206,9 @@ jobs:
         // with the identifier and Cargo feature. Never substitute the stable frontend.
         cfg.build.beforeBuildCommand = 'pnpm build:preview && pnpm build:reader && pnpm copy:reader';
         if (platform === 'ohos') {
-          cfg.identifier = 'org.houheya.moke_openharmony';
+          const ohos = JSON.parse(fs.readFileSync('src-tauri/tauri.preview.ohos.conf.json', 'utf8'));
+          cfg.identifier = ohos.identifier;
+          cfg.app.security.capabilities = ohos.app.security.capabilities;
           cfg.build.beforeBuildCommand += ' && node scripts/prepare-ohos.mjs';
         }
         cfg.bundle.createUpdaterArtifacts = false;
