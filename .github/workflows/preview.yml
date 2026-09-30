@@ -205,7 +205,10 @@ jobs:
         // Keep the Preview frontend command: the source build.rs validates it together
         // with the identifier and Cargo feature. Never substitute the stable frontend.
         cfg.build.beforeBuildCommand = 'pnpm build:preview && pnpm build:reader && pnpm copy:reader';
-        if (platform === 'ohos') cfg.build.beforeBuildCommand += ' && node scripts/prepare-ohos.mjs';
+        if (platform === 'ohos') {
+          cfg.identifier = 'org.houheya.moke_openharmony';
+          cfg.build.beforeBuildCommand += ' && node scripts/prepare-ohos.mjs';
+        }
         cfg.bundle.createUpdaterArtifacts = false;
         // Empty endpoints disable update checks. Override the base public key too,
         // so these packages neither inherit Stable's updater identity nor need
@@ -272,7 +275,7 @@ jobs:
         set -euo pipefail
         if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
         pnpm tauri ios init --ci --config src-tauri/tauri.preview.ci.conf.json
-        node scripts/prepare-mobile-app-names.mjs ios
+        node scripts/prepare-mobile-app-names.mjs ios --config src-tauri/tauri.preview.ci.conf.json
         pnpm tauri ios build --ci --target aarch64 --no-sign --archive-only --config src-tauri/tauri.preview.ci.conf.json --features preview
         PRIVATE_BUILD
         then
