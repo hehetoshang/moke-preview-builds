@@ -1,5 +1,5 @@
 # Actions-only public repository. Source is fetched from private main at runtime.
-# Triggers: Run workflow -> Actions Artifacts only; preview-vX.Y.Z.N -> public prerelease.
+# Triggers: Run workflow -> Actions Artifacts only; preview-vX.Y.Z.N -> public Latest release.
 # A four-part tag maps to the source SemVer X.Y.Z-N. MSI requires a numeric prerelease.
 # Required secrets: MOKE_SOURCE_DEPLOY_KEY (read-only), MOKE_PREVIEW_ENTITLEMENT_URL,
 # MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY (pinned Ed25519 key, not downloaded on each run).
@@ -75,7 +75,7 @@ jobs:
         if (!/^[A-Za-z0-9_+/-]+={0,2}$/.test(key) || Buffer.from(key, 'base64url').length !== 32) throw new Error('Invalid Ed25519 public key');
         const sha = cp.execFileSync('git', ['-C', 'source', 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
         fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha=${sha}\nversion=${version}\npublic_version=${publicVersion}\n`);
-        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${publicVersion} (internal ${version})\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public prerelease. OHOS packages are release-signed; Android/iOS packages are unsigned; automatic updating is disabled.\n`);
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${publicVersion} (internal ${version})\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public release marked as Latest. OHOS packages are release-signed; Android/iOS packages are unsigned; automatic updating is disabled.\n`);
         JS
   build:
     name: Preview / ${{ matrix.id }}
@@ -434,7 +434,7 @@ jobs:
         pattern: preview-*
         merge-multiple: true
         path: dist
-    - name: Publish public prerelease
+    - name: Publish public Latest release
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -452,4 +452,4 @@ jobs:
           echo '::error::This release already exists. Use a new version tag; published packages will not be overwritten.'
           exit 1
         fi
-        gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "Moke Preview v$PREVIEW_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" dist/*
+        gh release create "$RELEASE_TAG" --verify-tag --latest --title "Moke Preview v$PREVIEW_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" dist/*
