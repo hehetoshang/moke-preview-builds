@@ -1,6 +1,6 @@
 # Actions-only public repository. Source is fetched from private main at runtime.
 # Triggers: Run workflow -> Actions Artifacts only; preview-vX.Y.Z.N -> public prerelease.
-# A four-part tag maps to the source SemVer X.Y.Z-preview.N.
+# A four-part tag maps to the source SemVer X.Y.Z-N. MSI requires a numeric prerelease.
 # Required secrets: MOKE_SOURCE_DEPLOY_KEY (read-only), MOKE_PREVIEW_ENTITLEMENT_URL,
 # MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY (pinned Ed25519 key, not downloaded on each run).
 # Build caches and plaintext compiler logs must not be published here.
@@ -60,10 +60,10 @@ jobs:
         if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Invalid source version');
         let publicVersion = version;
         if (process.env.GITHUB_REF_TYPE === 'tag') {
-          const match = /^preview-v(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(process.env.GITHUB_REF_NAME);
-          if (!match || Number(match[4]) < 1) throw new Error('Expected a four-part Preview tag: preview-vX.Y.Z.N');
+          const match = /^preview-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.([1-9]\d*)$/.exec(process.env.GITHUB_REF_NAME);
+          if (!match || Number(match[4]) > 65535) throw new Error('Expected preview-vX.Y.Z.N with 1 <= N <= 65535 for MSI');
           publicVersion = match.slice(1).join('.');
-          const internalVersion = `${match[1]}.${match[2]}.${match[3]}-preview.${match[4]}`;
+          const internalVersion = `${match[1]}.${match[2]}.${match[3]}-${match[4]}`;
           if (version !== internalVersion) throw new Error('Preview tag does not match package.json on private main');
         }
         for (const name of ['MOKE_PREVIEW_ENTITLEMENT_URL', 'MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY']) {
