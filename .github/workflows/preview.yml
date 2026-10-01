@@ -458,6 +458,12 @@ jobs:
 
         Android packages are signed and verified with the configured release key. OpenHarmony packages are signed and verified with the configured Release profile. iOS packages are unsigned and require signing before installation. Desktop bundles are not notarized. Automatic in-app updating is disabled; download updates from Releases. Preview entitlement verification remains enabled.
         NOTES
+        # Annotated release tags carry reviewed notes without publishing private source.
+        tag_sha="$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq 'select(.object.type == "tag") | .object.sha')"
+        if [ -n "$tag_sha" ]; then
+          gh api "repos/$GH_REPO/git/tags/$tag_sha" --jq '.message' > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
+        fi
         if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
           echo '::error::This release already exists. Use a new version tag; published packages will not be overwritten.'
           exit 1
