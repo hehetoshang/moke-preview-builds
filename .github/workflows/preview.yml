@@ -1,6 +1,6 @@
 # Actions-only public repository. Source is fetched from private main at runtime.
-# Triggers: Run workflow -> Actions Artifacts only; preview-vX.Y.Z or vX.Y.Z -> public prerelease.
-# The tag version must equal source/package.json on private main.
+# Triggers: Run workflow -> Actions Artifacts only; preview-vX.Y.Z.N -> public prerelease.
+# A four-part tag maps to the source SemVer X.Y.Z-preview.N.
 # Required secrets: MOKE_SOURCE_DEPLOY_KEY (read-only), MOKE_PREVIEW_ENTITLEMENT_URL,
 # MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY (pinned Ed25519 key, not downloaded on each run).
 # Build caches and plaintext compiler logs must not be published here.
@@ -11,7 +11,6 @@ name: Build Moke Preview
   push:
     tags:
     - preview-v*
-    - v*
   workflow_dispatch:
     inputs:
       mobile_diagnostics:
@@ -31,6 +30,7 @@ jobs:
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       version: ${{ steps.source.outputs.version }}
+      public_version: ${{ steps.source.outputs.public_version }}
     steps:
     - name: Checkout private source
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -58,9 +58,13 @@ jobs:
         const pkg = JSON.parse(fs.readFileSync('source/package.json', 'utf8'));
         const version = pkg.version;
         if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Invalid source version');
+        let publicVersion = version;
         if (process.env.GITHUB_REF_TYPE === 'tag') {
-          const tagged = process.env.GITHUB_REF_NAME.replace(/^(?:preview-)?v/, '');
-          if (tagged !== version) throw new Error('Tag version must match package.json on private main');
+          const match = /^preview-v(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(process.env.GITHUB_REF_NAME);
+          if (!match || Number(match[4]) < 1) throw new Error('Expected a four-part Preview tag: preview-vX.Y.Z.N');
+          publicVersion = match.slice(1).join('.');
+          const internalVersion = `${match[1]}.${match[2]}.${match[3]}-preview.${match[4]}`;
+          if (version !== internalVersion) throw new Error('Preview tag does not match package.json on private main');
         }
         for (const name of ['MOKE_PREVIEW_ENTITLEMENT_URL', 'MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY']) {
           if (!process.env[name]?.trim()) throw new Error(`Missing Actions secret: ${name}`);
@@ -70,8 +74,8 @@ jobs:
         const key = process.env.MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY;
         if (!/^[A-Za-z0-9_+/-]+={0,2}$/.test(key) || Buffer.from(key, 'base64url').length !== 32) throw new Error('Invalid Ed25519 public key');
         const sha = cp.execFileSync('git', ['-C', 'source', 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
-        fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha=${sha}\nversion=${version}\n`);
-        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${version}\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public prerelease. OHOS packages are release-signed; Android/iOS packages are unsigned; automatic updating is disabled.\n`);
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha=${sha}\nversion=${version}\npublic_version=${publicVersion}\n`);
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${publicVersion} (internal ${version})\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public prerelease. OHOS packages are release-signed; Android/iOS packages are unsigned; automatic updating is disabled.\n`);
         JS
   build:
     name: Preview / ${{ matrix.id }}
@@ -93,6 +97,7 @@ jobs:
       BUILD_PLATFORM: ${{ matrix.platform }}
       BUILD_TARGET: ${{ matrix.target }}
       BUILD_ID: ${{ matrix.id }}
+      BUILD_PUBLIC_VERSION: ${{ needs.resolve.outputs.public_version }}
       MOKE_PREVIEW_ENTITLEMENT_URL: ${{ secrets.MOKE_PREVIEW_ENTITLEMENT_URL }}
       MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY: ${{ secrets.MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY }}
     strategy:
@@ -348,16 +353,16 @@ jobs:
             payload = payload_root / 'Payload'
             payload.mkdir(parents=True)
             shutil.copytree(apps[0], payload / apps[0].name, symlinks=True)
-            ipa = out / f'Moke-Preview-{suffix}-unsigned.ipa'
+            ipa = out / f'Moke-Preview-{os.environ["BUILD_PUBLIC_VERSION"]}-{suffix}-unsigned.ipa'
             subprocess.run(['ditto', '-c', '-k', '--keepParent', str(payload), str(ipa)], check=True)
             files = []
         for p in files:
-            target = out / f'{suffix}-{p.name}'
+            target = out / f'Moke-Preview-{os.environ["BUILD_PUBLIC_VERSION"]}-{suffix}-{p.name}'
             if target.exists(): raise RuntimeError('Ambiguous package filename')
             shutil.copy2(p, target)
         packages = sorted(out.iterdir())
         if not packages: raise RuntimeError('No distributable packages found')
-        (out / f'SHA256SUMS-{suffix}.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in packages))
+        (out / f'SHA256SUMS-{os.environ["BUILD_PUBLIC_VERSION"]}-{suffix}.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in packages))
         PY
         PRIVATE_BUILD
         then
@@ -435,7 +440,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
         RELEASE_TAG: ${{ github.ref_name }}
-        PREVIEW_VERSION: ${{ needs.resolve.outputs.version }}
+        PREVIEW_VERSION: ${{ needs.resolve.outputs.public_version }}
       run: |-
         set -euo pipefail
         cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
