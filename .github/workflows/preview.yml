@@ -3,6 +3,7 @@
 # A four-part tag maps to the source SemVer X.Y.Z-N. MSI requires a numeric prerelease.
 # Required secrets: MOKE_SOURCE_DEPLOY_KEY (read-only), MOKE_PREVIEW_ENTITLEMENT_URL,
 # MOKE_PREVIEW_ENTITLEMENT_PUBLIC_KEY (pinned Ed25519 key, not downloaded on each run).
+# Android and OHOS release signing secrets are also required.
 # Build caches and plaintext compiler logs must not be published here.
 # Failure diagnostics are encrypted to MOKE_DIAGNOSTICS_CERT_BASE64; the private key stays offline.
 # This workflow preserves the private source's Preview gate, capabilities and feature.
@@ -75,7 +76,7 @@ jobs:
         if (!/^[A-Za-z0-9_+/-]+={0,2}$/.test(key) || Buffer.from(key, 'base64url').length !== 32) throw new Error('Invalid Ed25519 public key');
         const sha = cp.execFileSync('git', ['-C', 'source', 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
         fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha=${sha}\nversion=${version}\npublic_version=${publicVersion}\n`);
-        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${publicVersion} (internal ${version})\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public release marked as Latest. OHOS packages are release-signed; Android/iOS packages are unsigned; automatic updating is disabled.\n`);
+        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Preview ${publicVersion} (internal ${version})\n\nAll jobs use the same private main revision. Manual runs retain artifacts; version tags publish a public release marked as Latest. Android and OHOS packages are release-signed; iOS packages are unsigned; automatic updating is disabled.\n`);
         JS
   build:
     name: Preview / ${{ matrix.id }}
@@ -276,6 +277,14 @@ jobs:
           exit 1
         fi
       if: matrix.platform == 'android'
+    - name: Sign and verify Preview Android packages
+      if: matrix.platform == 'android'
+      env:
+        ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      run: python3 scripts/sign-android-release.py
     - name: Build unsigned Preview iOS archive
       shell: bash
       run: |
@@ -342,7 +351,8 @@ jobs:
             extensions = {'linux': {'.deb', '.AppImage'}, 'windows': {'.msi', '.exe'}, 'macos': {'.dmg'}}[platform]
             files = [p for p in base.rglob('*') if p.is_file() and p.suffix in extensions]
         elif platform == 'android':
-            files = list((root / 'src-tauri/gen/android/app/build/outputs/apk').rglob('*release-unsigned.apk'))
+            files = list((root / 'android-release-artifacts').glob('*-signed.apk'))
+            if not files: raise RuntimeError('No verified Android package found')
         elif platform == 'ohos':
             files = list((root / 'ohos-release-artifacts').glob('*-signed.hap'))
             if not files: raise RuntimeError('No verified OHOS package found')
@@ -446,7 +456,7 @@ jobs:
         cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
         Preview packages built from private main. All platform jobs use the same source revision.
 
-        OpenHarmony packages are signed and verified with the configured Release profile. Android and iOS packages are unsigned and require signing before installation. Desktop bundles are not notarized. Automatic in-app updating is disabled; download updates from Releases. Preview entitlement verification remains enabled.
+        Android packages are signed and verified with the configured release key. OpenHarmony packages are signed and verified with the configured Release profile. iOS packages are unsigned and require signing before installation. Desktop bundles are not notarized. Automatic in-app updating is disabled; download updates from Releases. Preview entitlement verification remains enabled.
         NOTES
         if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
           echo '::error::This release already exists. Use a new version tag; published packages will not be overwritten.'
