@@ -4,7 +4,7 @@ Moke Preview 是墨客的预览通道，面向希望提前体验新功能并参�
 
 本仓库提供 Moke Preview 安装包与发布说明。完整参与说明可查看 [墨客帮助文档 · Moke Preview 赞助内测](https://website-ten-tan-60.vercel.app/docs/guide/support#moke-preview-%E8%B5%9E%E5%8A%A9%E5%86%85%E6%B5%8B)。
 
-[下载 Preview](https://github.com/hehetoshang/moke-preview-builds/releases/latest) · [参加赞助内测](https://ifdian.net/a/hehetoshang) · [一键反馈](https://github.com/talebook/moke/issues/new?template=moke-preview.yml&labels=moke-preview) · [帮助文档](https://website-ten-tan-60.vercel.app/docs/)
+[下载 Preview](https://github.com/hehetoshang/moke-preview-builds/releases) · [参加赞助内测](https://ifdian.net/a/hehetoshang) · [一键反馈](https://github.com/talebook/moke/issues/new?template=moke-preview.yml&labels=moke-preview) · [帮助文档](https://website-ten-tan-60.vercel.app/docs/)
 
 ## 可以体验什么
 
@@ -23,7 +23,7 @@ Moke Preview 是墨客的预览通道，面向希望提前体验新功能并参�
 
 ## 下载与安装
 
-前往 [最新发布版本](https://github.com/hehetoshang/moke-preview-builds/releases/latest)，在 **Assets** 中选择对应平台的安装包。具体可用平台及安装要求以该版本的发布说明为准。
+前往 [本仓库的 Releases 页面](https://github.com/hehetoshang/moke-preview-builds/releases)，在最新版本的 **Assets** 中选择对应平台的安装包。具体可用平台及安装要求以该版本的发布说明为准。
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
@@ -34,7 +34,7 @@ Moke Preview 是墨客的预览通道，面向希望提前体验新功能并参�
 | iOS / iPadOS | ARM64 | 未签名的 `.ipa`，需要自行签名安装 |
 | HarmonyOS NEXT | ARM64 | 已签名的 `.hap` |
 
-当前本仓库发布的 Preview 安装包未启用自动更新。需要更新时，请在 Releases 下载新版本并按发布说明安装。
+当前本仓库发布的 Preview 安装包未启用自动更新。需要更新时，请在 [本仓库的 Releases 页面](https://github.com/hehetoshang/moke-preview-builds/releases)下载新版本并按发布说明安装。
 
 ## 使用须知
 
