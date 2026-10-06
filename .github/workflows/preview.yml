@@ -255,7 +255,7 @@ jobs:
         if ! bash --noprofile --norc -e -o pipefail > "$RUNNER_TEMP/moke-private-build.log" 2>&1 <<'PRIVATE_BUILD'
         pnpm tauri android init --ci --config src-tauri/tauri.preview.ci.conf.json
         node scripts/prepare-mobile-app-names.mjs android
-        pnpm tauri icon src-tauri/icons/icon.png
+        node scripts/prepare-mobile-icons.mjs android
         python3 - <<'PY'
         from pathlib import Path
         import re
@@ -312,7 +312,7 @@ jobs:
         cargo build --manifest-path vendor/tauri/Cargo.toml -p tauri-cli --no-default-features --features rustls --locked
         export PATH="$PWD/vendor/tauri/target/debug:$PATH"
         cargo tauri ohos init --ci --config src-tauri/tauri.ohos.conf.json --config src-tauri/tauri.preview.ci.conf.json
-        cargo tauri icon src-tauri/icons/icon.png
+        node scripts/prepare-mobile-icons.mjs ohos
         (cd src-tauri/gen/ohos && ohpm install)
         node scripts/prepare-ohos.mjs
         node scripts/prepare-ohos-release.mjs
